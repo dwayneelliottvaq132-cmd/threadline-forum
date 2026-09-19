@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS CloudFront delivery layer for the Threadline forum
+Parameters:
+  OriginDomain:
+    Type: String
+    Default: threadline-forum.dwayneelliott884.chatgpt.site
+Resources:
+  ThreadlineDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: Threadline forum
+        Enabled: true
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: threadline-origin
+            DomainName: !Ref OriginDomain
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: threadline-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - PATCH
+            - POST
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 413f160c-24ab-4c44-868f-bf805d18d1f1
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+Outputs:
+  DistributionDomainName:
+    Description: AWS-hosted URL for Threadline
+    Value: !GetAtt ThreadlineDistribution.DomainName
+  DistributionId:
+    Value: !Ref ThreadlineDistribution
