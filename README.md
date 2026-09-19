@@ -27,7 +27,7 @@ Open `http://localhost:3000`.
 - Responsive desktop and mobile layouts
 - Local persistence for joins, RSVPs, and messages
 
-The included build is a front-end MVP. Uploaded media stays in the current browser session; production accounts, moderation, database records, real-time chat, geolocation, and cloud media storage should be connected to your backend before public launch.
+The included build is a front-end MVP. Uploaded media and activity are saved on the current device when browser storage is available; production accounts, moderation, database records, real-time chat, geolocation, and cloud media storage should be connected to your backend before public launch.
 
 ## Deploy to AWS Amplify
 
@@ -57,3 +57,16 @@ pnpm build
 ```
 
 The static export is written to `out/`; Amplify deploys the corresponding Next.js build metadata from `.next/` as required for Next.js 14 and later.
+
+## Device activity update
+
+- Feed search matches post text, author, and community.
+- Saved feed shows bookmarked posts; My groups uses joined communities.
+- Comments, bookmarks, likes, posts, media, group membership, RSVPs, and separate conversation histories persist in IndexedDB on the current browser/device.
+- Existing local activity is imported on first use. Storage failures display a visible warning.
+- Sharing copies post text and its link to the clipboard.
+- Links accept only HTTP/HTTPS; local media is limited to 10 MB per file. Photo brightness and rotation are retained when posted.
+
+This remains a device-local prototype: demo profiles, simulated dating matches, and messages are not real accounts or delivered messages. No AWS identity, shared database, cloud uploads, or protected admin backend is configured. Video trim controls currently preview a selection and do not encode a trimmed video. Clearing browser data removes local activity.
+
+Run focused feed and link validation checks with `node --test tests/feed.test.mjs`.

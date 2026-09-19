@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, CalendarDays, Camera, Check, Compass, Edit3, Film, Heart, Home, Image as ImageIcon, Link2, MapPin, MessageCircle, MoreHorizontal, Paperclip, Plus, RotateCw, Search, Send, Settings2, Share2, SlidersHorizontal, Sparkles, Users, Video, WandSparkles, X } from "lucide-react";
+import { readActivity, writeActivity } from "@/lib/activity";
+import { filterPosts, safeLink } from "@/lib/feed.mjs";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -12,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 type View = "home" | "communities" | "nearby" | "dating" | "messages";
 type ComposerType = "text" | "photo" | "video" | "link";
 type FilterName = "Original" | "Glow" | "Mono" | "Noir" | "Warm";
-type Post = { id: string; author: string; handle: string; avatar: string; community: string; time: string; text: string; image?: string; video?: string; link?: string; likes: number; comments: number; liked?: boolean; filter?: FilterName; rotation?: number };
+type Post = { id: string; author: string; handle: string; avatar: string; community: string; time: string; text: string; image?: string; video?: string; link?: string; likes: number; comments: number; liked?: boolean; filter?: FilterName; rotation?: number; brightness?: number; saved?: boolean; replies?: { id: string; text: string }[] };
 
 const starterPosts: Post[] = [
   { id: "p1", author: "Maya Chen", handle: "@mayamakes", avatar: "MC", community: "Fort Worth Social", time: "18m", text: "The rooftop supper club finally happened. Twelve strangers, one long table, and no one checked the time. Next one is already on the calendar.", image: "/rooftop-supper.webp", likes: 428, comments: 37 },
@@ -47,6 +49,9 @@ const initialMessages = [
 ];
 const filters: Record<FilterName, string> = { Original: "none", Glow: "saturate(1.18) contrast(1.04) brightness(1.06)", Mono: "grayscale(1) contrast(1.06)", Noir: "grayscale(1) contrast(1.45) brightness(.82)", Warm: "sepia(.2) saturate(1.25) hue-rotate(-8deg)" };
 
+type PostActions = { save: (id: string) => void; reply: (id: string, text: string) => void };
+const PostContext = createContext<PostActions>({ save: () => {}, reply: () => {} });
+
 function Avatar({ initials, size = "md", accent = false }: { initials: string; size?: "sm" | "md" | "lg"; accent?: boolean }) { return <span className={`avatar avatar-${size} ${accent ? "avatar-accent" : ""}`}>{initials}</span> }
 function Logo() { return <div className="brand"><span className="brand-mark"><span /><span /><span /></span><span>Threadline</span></div> }
 
@@ -69,27 +74,37 @@ export default function HomePage() {
   const [datingIndex, setDatingIndex] = useState(0);
   const [match, setMatch] = useState(false);
   const [activeConversation, setActiveConversation] = useState("c1");
-  const [messages, setMessages] = useState(initialMessages);
+  const [threads, setThreads] = useState<Record<string, typeof initialMessages>>({ c1: initialMessages, c2: [], c3: [] });
+  const messages = threads[activeConversation] ?? [];
+  const [loaded, setLoaded] = useState(false);
+  const [storageError, setStorageError] = useState("");
   const [messageDraft, setMessageDraft] = useState("");
   const [toast, setToast] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const saved = localStorage.getItem("threadline-state");
-      if (!saved) return;
-      try {
-        const state = JSON.parse(saved);
-        if (state.joined) setJoined(state.joined);
-        if (state.rsvps) setRsvps(state.rsvps);
-        if (state.messages) setMessages(state.messages);
-      } catch {
-        localStorage.removeItem("threadline-state");
+    let cancelled = false;
+    void readActivity<{ joined: string[]; rsvps: number[]; posts: Post[]; threads: Record<string, typeof initialMessages> }>().then(state => {
+      if (cancelled) return;
+      if (state) {
+        if (Array.isArray(state.joined)) setJoined(state.joined);
+        if (Array.isArray(state.rsvps)) setRsvps(state.rsvps);
+        if (Array.isArray(state.posts)) setPosts(state.posts);
+        if (state.threads) setThreads(state.threads);
       }
-    }, 0);
-    return () => window.clearTimeout(timer);
+      setLoaded(true);
+    }).catch(() => {
+      if (!cancelled) { setStorageError("Device storage is unavailable. Changes will last only for this session."); setLoaded(true); }
+    });
+    return () => { cancelled = true; };
   }, []);
-  useEffect(() => { localStorage.setItem("threadline-state", JSON.stringify({ joined, rsvps, messages })) }, [joined, rsvps, messages]);
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = window.setTimeout(() => {
+      void writeActivity({ joined, rsvps, posts, threads }).then(() => setStorageError("")).catch(() => setStorageError("Could not save changes on this device. Storage may be full."));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [loaded, joined, rsvps, posts, threads]);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2400); return () => clearTimeout(t) }, [toast]);
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool?: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
@@ -100,36 +115,60 @@ export default function HomePage() {
 
   const currentProfile = datingProfiles[datingIndex % datingProfiles.length];
   const currentConversation = conversations.find(c => c.id === activeConversation) ?? conversations[0];
-  const recommendations = useMemo(() => feedMode === "local" ? [starterPosts[0], starterPosts[2], starterPosts[1]] : feedMode === "following" ? [starterPosts[1], starterPosts[0]] : posts, [feedMode, posts]);
+  const recommendations = useMemo(() => filterPosts(posts, feedMode, joined), [feedMode, posts, joined]);
   const notify = (text: string) => setToast(text);
   const toggleLike = (id: string) => setPosts(current => current.map(post => post.id === id ? { ...post, liked: !post.liked, likes: post.likes + (post.liked ? -1 : 1) } : post));
   const openComposer = (type: ComposerType) => { setComposerType(type); setComposerOpen(true); setMediaUrl(""); setLink(""); setFilter("Original"); setRotation(0); setBrightness([100]) };
-  const handleFile = (file?: File) => { if (!file) return; setComposerType(file.type.startsWith("video/") ? "video" : "photo"); if (file.type.startsWith("image/")) { const reader = new FileReader(); reader.onload = () => setMediaUrl(String(reader.result)); reader.readAsDataURL(file) } else setMediaUrl(URL.createObjectURL(file)) };
-  const publishPost = () => { if (!draft.trim() && !mediaUrl && !link.trim()) return notify("Add something before publishing."); const post: Post = { id: crypto.randomUUID(), author: "Dwayne", handle: "@dwayne", avatar: "DE", community: "Your profile", time: "now", text: draft.trim(), likes: 0, comments: 0, ...(composerType === "photo" && mediaUrl ? { image: mediaUrl, filter, rotation } : {}), ...(composerType === "video" && mediaUrl ? { video: mediaUrl } : {}), ...(composerType === "link" && link ? { link } : {}) }; setPosts(current => [post, ...current]); setView("home"); setFeedMode("for-you"); setComposerOpen(false); setDraft(""); setMediaUrl(""); setLink(""); notify("Your post is live.") };
-  const sendMessage = () => { if (!messageDraft.trim()) return; setMessages(current => [...current, { from: "me", text: messageDraft.trim(), time: "now" }]); setMessageDraft("") };
+  const handleFile = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) return notify("Choose an image or video file.");
+    if (file.size > 10 * 1024 * 1024) return notify("Choose a file smaller than 10 MB for device storage.");
+    setComposerType(file.type.startsWith("video/") ? "video" : "photo");
+    const reader = new FileReader();
+    reader.onload = () => setMediaUrl(String(reader.result));
+    reader.onerror = () => notify("Could not read that file. Please try another.");
+    reader.readAsDataURL(file);
+  };
+  const publishPost = () => { if (composerType === "link" && !safeLink(link)) return notify("Enter a valid https:// or http:// link."); if (!draft.trim() && !mediaUrl && !link.trim()) return notify("Add something before publishing."); const post: Post = { id: crypto.randomUUID(), author: "Dwayne", handle: "@dwayne", avatar: "DE", community: "Your profile", time: "now", text: draft.trim(), likes: 0, comments: 0, ...(composerType === "photo" && mediaUrl ? { image: mediaUrl, filter, rotation, brightness: brightness[0] } : {}), ...(composerType === "video" && mediaUrl ? { video: mediaUrl } : {}), ...(composerType === "link" && link ? { link: safeLink(link)! } : {}) }; setPosts(current => [post, ...current]); setView("home"); setFeedMode("for-you"); setComposerOpen(false); setDraft(""); setMediaUrl(""); setLink(""); notify("Post added on this device.") };
+  const sendMessage = () => { if (!messageDraft.trim()) return; setThreads(current => ({ ...current, [activeConversation]: [...(current[activeConversation] ?? []), { from: "me", text: messageDraft.trim().slice(0, 4000), time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }] })); setMessageDraft("") };
   const nextDate = (liked: boolean) => { if (liked && datingIndex === 0) setMatch(true); else { setDatingIndex(i => i + 1); notify(liked ? "Added to your likes." : "Profile passed.") } };
-  const mediaFilter = `${filters[filter]} brightness(${brightness[0]}%)`;
+  const mediaFilter = `${filter === "Original" ? "" : filters[filter]} brightness(${brightness[0]}%)`;
 
-  return <div className="app-shell">
+  if (!loaded) return <main className="page-frame"><p role="status">Loading your activity…</p></main>;
+  return <PostContext.Provider value={{
+    save: id => setPosts(current => current.map(post => post.id === id ? { ...post, saved: !post.saved } : post)),
+    reply: (id, text) => setPosts(current => current.map(post => post.id === id ? { ...post, comments: post.comments + 1, replies: [...(post.replies ?? []), { id: crypto.randomUUID(), text: text.slice(0, 2000) }] } : post)),
+  }}><div className="app-shell">
     <aside className="left-rail"><Logo /><nav aria-label="Primary navigation"><NavButton icon={<Home />} label="Home" active={view === "home"} onClick={() => setView("home")} /><NavButton icon={<Users />} label="Communities" active={view === "communities"} onClick={() => setView("communities")} /><NavButton icon={<MapPin />} label="Nearby" active={view === "nearby"} onClick={() => setView("nearby")} /><NavButton icon={<Heart />} label="Dating" active={view === "dating"} onClick={() => setView("dating")} /><NavButton icon={<MessageCircle />} label="Messages" badge="2" active={view === "messages"} onClick={() => setView("messages")} /></nav><Button className="create-button" onClick={() => openComposer("text")}><Plus /> Create</Button><div className="rail-profile"><Avatar initials="DE" /><div><strong>Dwayne</strong><span>@dwayne</span></div><MoreHorizontal /></div></aside>
-    <main className="main-surface"><header className="mobile-header"><Logo /><button aria-label="Notifications"><Bell /></button></header>{view === "home" && <FeedView feedMode={feedMode} setFeedMode={setFeedMode} posts={recommendations} openComposer={openComposer} toggleLike={toggleLike} notify={notify} />}{view === "communities" && <CommunitiesView joined={joined} setJoined={setJoined} notify={notify} />}{view === "nearby" && <NearbyView rsvps={rsvps} setRsvps={setRsvps} notify={notify} />}{view === "dating" && <DatingView profile={currentProfile} nextDate={nextDate} match={match} setMatch={setMatch} onMessage={() => { setView("messages"); setMatch(false) }} />}{view === "messages" && <MessagesView activeConversation={activeConversation} setActiveConversation={setActiveConversation} currentConversation={currentConversation} messages={messages} messageDraft={messageDraft} setMessageDraft={setMessageDraft} sendMessage={sendMessage} />}</main>
+    <main className="main-surface"><p className="device-notice">Demo profiles · activity saved on this device · messages are not delivered to other people.</p>{storageError && <p role="alert" className="device-notice">{storageError}</p>}<header className="mobile-header"><Logo /><button aria-label="Notifications"><Bell /></button></header>{view === "home" && <FeedView feedMode={feedMode} setFeedMode={setFeedMode} posts={recommendations} openComposer={openComposer} toggleLike={toggleLike} notify={notify} />}{view === "communities" && <CommunitiesView joined={joined} setJoined={setJoined} notify={notify} />}{view === "nearby" && <NearbyView rsvps={rsvps} setRsvps={setRsvps} notify={notify} />}{view === "dating" && <DatingView profile={currentProfile} nextDate={nextDate} match={match} setMatch={setMatch} onMessage={() => { setView("messages"); setMatch(false) }} />}{view === "messages" && <MessagesView activeConversation={activeConversation} setActiveConversation={setActiveConversation} currentConversation={currentConversation} messages={messages} messageDraft={messageDraft} setMessageDraft={setMessageDraft} sendMessage={sendMessage} />}</main>
     {view === "home" && <RightRail setView={setView} joined={joined} setJoined={setJoined} notify={notify} />}
     <nav className="bottom-nav" aria-label="Mobile navigation"><button className={view === "home" ? "active" : ""} onClick={() => setView("home")}><Home /><span>Home</span></button><button className={view === "communities" ? "active" : ""} onClick={() => setView("communities")}><Users /><span>Groups</span></button><button className="mobile-create" onClick={() => openComposer("text")} aria-label="Create post"><Plus /></button><button className={view === "dating" ? "active" : ""} onClick={() => setView("dating")}><Heart /><span>Dating</span></button><button className={view === "messages" ? "active" : ""} onClick={() => setView("messages")}><MessageCircle /><span>Inbox</span></button></nav>
     <ComposerDialog open={composerOpen} onOpenChange={setComposerOpen} type={composerType} setType={setComposerType} draft={draft} setDraft={setDraft} link={link} setLink={setLink} mediaUrl={mediaUrl} fileRef={fileRef} handleFile={handleFile} filter={filter} setFilter={setFilter} rotation={rotation} setRotation={setRotation} brightness={brightness} setBrightness={setBrightness} videoTrim={videoTrim} setVideoTrim={setVideoTrim} videoMuted={videoMuted} setVideoMuted={setVideoMuted} mediaFilter={mediaFilter} publishPost={publishPost} />
     {toast && <div className="toast" role="status"><Check />{toast}</div>}
-  </div>
+  </div></PostContext.Provider>
 }
 
 function NavButton({ icon, label, active, badge, onClick }: { icon: React.ReactNode; label: string; active: boolean; badge?: string; onClick: () => void }) { return <button className={`nav-button ${active ? "active" : ""}`} onClick={onClick}>{icon}<span>{label}</span>{badge && <b>{badge}</b>}</button> }
 
 function FeedView({ feedMode, setFeedMode, posts, openComposer, toggleLike, notify }: { feedMode: string; setFeedMode: (mode: string) => void; posts: Post[]; openComposer: (type: ComposerType) => void; toggleLike: (id: string) => void; notify: (text: string) => void }) {
-  return <div className="feed-page page-frame"><div className="feed-head"><Tabs value={feedMode} onValueChange={setFeedMode}><TabsList variant="line"><TabsTrigger value="for-you">For you</TabsTrigger><TabsTrigger value="following">Following</TabsTrigger><TabsTrigger value="local">Local</TabsTrigger></TabsList></Tabs><button className="icon-button" aria-label="Feed settings"><SlidersHorizontal /></button></div>
-    <section className="composer-card"><div className="composer-row"><Avatar initials="DE" accent /><button className="composer-prompt" onClick={() => openComposer("text")}>Share something with your people…</button></div><div className="composer-actions"><button onClick={() => openComposer("photo")}><ImageIcon /> Photo</button><button onClick={() => openComposer("video")}><Video /> Video</button><button onClick={() => openComposer("link")}><Link2 /> Link</button><button onClick={() => openComposer("text")}><Edit3 /> Post</button></div></section>
-    <div className="context-line"><Sparkles /> Recommended from your circles and interests</div><div className="post-stack">{posts.map(post => <PostCard key={post.id} post={post} toggleLike={toggleLike} notify={notify} />)}</div></div>
+  const [query, setQuery] = useState("");
+  const visible = filterPosts(posts, "all", [], query);
+  return <div className="feed-page page-frame"><div className="feed-head"><Tabs value={feedMode} onValueChange={setFeedMode}><TabsList variant="line"><TabsTrigger value="for-you">For you</TabsTrigger><TabsTrigger value="following">My groups</TabsTrigger><TabsTrigger value="local">Local</TabsTrigger><TabsTrigger value="saved">Saved</TabsTrigger></TabsList></Tabs><button className="icon-button" aria-label="Feed settings"><SlidersHorizontal /></button></div>
+    <label className="wide-search feed-search"><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search posts, people, or communities" aria-label="Search feed" /></label><section className="composer-card"><div className="composer-row"><Avatar initials="DE" accent /><button className="composer-prompt" onClick={() => openComposer("text")}>Share something with your people…</button></div><div className="composer-actions"><button onClick={() => openComposer("photo")}><ImageIcon /> Photo</button><button onClick={() => openComposer("video")}><Video /> Video</button><button onClick={() => openComposer("link")}><Link2 /> Link</button><button onClick={() => openComposer("text")}><Edit3 /> Post</button></div></section>
+    <div className="context-line"><Sparkles /> Recommended from your circles and interests</div><div className="post-stack">{visible.length === 0 && <p role="status">No posts found. Try another search or feed.</p>}{visible.map((post: Post) => <PostCard key={post.id} post={post} toggleLike={toggleLike} notify={notify} />)}</div></div>
 }
 
 function PostCard({ post, toggleLike, notify }: { post: Post; toggleLike: (id: string) => void; notify: (text: string) => void }) {
-  return <article className="post-card"><header className="post-header"><Avatar initials={post.avatar} /><div><div className="post-author"><strong>{post.author}</strong><span>{post.handle}</span></div><div className="post-meta"><span>{post.community}</span><i>·</i><span>{post.time}</span></div></div><button className="icon-button subtle" aria-label="Post options"><MoreHorizontal /></button></header>{post.text && <p className="post-copy">{post.text}</p>}{post.image && <div className="post-media"><img src={post.image} alt="People enjoying a rooftop community dinner at sunset" style={{ filter: filters[post.filter ?? "Original"], transform: `rotate(${post.rotation ?? 0}deg)` }} /></div>}{post.video && <div className="post-media"><video src={post.video} controls playsInline /></div>}{post.link && <a className="link-preview" href={post.link} target="_blank" rel="noreferrer"><div><span>TRAVEL · LOCAL GUIDE</span><strong>Quiet corners of the Trinity trail</strong><p>Parking notes, the best loop, and a coffee stop along the way.</p></div><Link2 /></a>}<div className="post-actions"><button className={post.liked ? "liked" : ""} onClick={() => toggleLike(post.id)}><Heart fill={post.liked ? "currentColor" : "none"} />{post.likes}</button><button onClick={() => notify("Comments opened.")}><MessageCircle />{post.comments}</button><button onClick={() => notify("Post shared.")}><Share2 />Share</button><button className="save-action" onClick={() => notify("Saved for later.")}><Paperclip />Save</button></div></article>
+  const actions = useContext(PostContext);
+  const [expanded, setExpanded] = useState(false);
+  const [reply, setReply] = useState("");
+  const share = async () => {
+    try {
+      await navigator.clipboard.writeText([post.text, post.link].filter(Boolean).join("\n"));
+      notify("Post text copied.");
+    } catch { notify("Clipboard unavailable. Select and copy the post text."); }
+  };
+  return <article className="post-card"><header className="post-header"><Avatar initials={post.avatar} /><div><div className="post-author"><strong>{post.author}</strong><span>{post.handle}</span></div><div className="post-meta"><span>{post.community}</span><i>·</i><span>{post.time}</span></div></div><button className="icon-button subtle" aria-label="Post options"><MoreHorizontal /></button></header>{post.text && <p className="post-copy">{post.text}</p>}{post.image && <div className="post-media"><img src={post.image} alt={`Photo shared by ${post.author}`} style={{ filter: `${!post.filter || post.filter === "Original" ? "" : filters[post.filter]} brightness(${post.brightness ?? 100}%)`, transform: `rotate(${post.rotation ?? 0}deg)` }} /></div>}{post.video && <div className="post-media"><video src={post.video} controls playsInline /></div>}{post.link && <a className="link-preview" href={safeLink(post.link) ?? "#"} target="_blank" rel="noreferrer"><div><span>SHARED LINK</span><strong>{safeLink(post.link) ? new URL(post.link).hostname : "Invalid link"}</strong><p>{post.link}</p></div><Link2 /></a>}<div className="post-actions"><button className={post.liked ? "liked" : ""} onClick={() => toggleLike(post.id)}><Heart fill={post.liked ? "currentColor" : "none"} />{post.likes}</button><button aria-expanded={expanded} onClick={() => setExpanded(!expanded)}><MessageCircle />{post.comments}</button><button onClick={share}><Share2 />Share</button><button className="save-action" aria-pressed={Boolean(post.saved)} onClick={() => actions.save(post.id)}><Paperclip />{post.saved ? "Saved" : "Save"}</button></div>{expanded && <section className="replies" aria-label="Comments"><p>Comments added on this device</p>{(post.replies ?? []).map(item => <p key={item.id}><strong>You: </strong>{item.text}</p>)}<form onSubmit={event => { event.preventDefault(); if (!reply.trim()) return; actions.reply(post.id, reply.trim()); setReply(""); }}><Input aria-label="Write a comment" value={reply} maxLength={2000} onChange={e => setReply(e.target.value)} placeholder="Add your comment…" /><Button type="submit" disabled={!reply.trim()}>Reply</Button></form></section>}</article>
 }
 
 function RightRail({ setView, joined, setJoined, notify }: { setView: (view: View) => void; joined: string[]; setJoined: React.Dispatch<React.SetStateAction<string[]>>; notify: (text: string) => void }) {
