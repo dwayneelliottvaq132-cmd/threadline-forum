@@ -33,7 +33,7 @@ The included build is a front-end MVP. Uploaded media stays in the current brows
 
 1. Push this folder to a GitHub, GitLab, Bitbucket, or CodeCommit repository.
 2. In AWS Amplify Hosting, choose **New app → Host web app** and connect the repository.
-3. Amplify will detect `amplify.yml` and build the static export from `out/`.
+3. Amplify will detect `amplify.yml` and deploy the Next.js build from `.next/`.
 4. Keep the build image on Node.js 22. The included `.nvmrc` and build file request that version.
 5. Deploy. No ChatGPT account, API, service, or runtime is required.
 
@@ -56,4 +56,4 @@ Do not rely on the UI alone for permissions. Enforce ownership, blocking, report
 pnpm build
 ```
 
-The deployable site is written to `out/`.
+The static export is written to `out/`; Amplify deploys the corresponding Next.js build metadata from `.next/` as required for Next.js 14 and later.
