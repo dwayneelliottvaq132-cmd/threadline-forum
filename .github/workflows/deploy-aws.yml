@@ -1,0 +1,37 @@
+name: Deploy Threadline to AWS
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: threadline-aws-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Validate CloudFormation
+        run: aws cloudformation validate-template --template-body file://aws/cloudfront-proxy.yaml
+      - name: Deploy Threadline
+        run: |
+          aws cloudformation deploy \
+            --stack-name threadline-forum-aws \
+            --template-file aws/cloudfront-proxy.yaml \
+            --no-fail-on-empty-changeset
+      - name: Publish AWS URL
+        run: |
+          DOMAIN=$(aws cloudformation describe-stacks \
+            --stack-name threadline-forum-aws \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue" \
+            --output text)
+          echo "### AWS deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://$DOMAIN" >> "$GITHUB_STEP_SUMMARY"
