@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Threadline — Community conversations",
-  description: "Join thoughtful conversations, share stories, and discover your community.",
+  title: "Threadline — communities, people and plans",
+  description: "A social network for visual stories, useful discussions, local meetups and meaningful connections.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
@@ -17,7 +17,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body style={{ "--font-body": "Inter, ui-sans-serif, system-ui, sans-serif", "--font-display": "Iowan Old Style, Baskerville, Georgia, serif" } as React.CSSProperties}>{children}</body>
     </html>
   );
 }
